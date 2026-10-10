@@ -1,0 +1,10 @@
+pandas
+numpy
+scipy
+streamlit
+requests
+yfinance
+plotly
+pytest
+python-dateutil
+pyarrow
