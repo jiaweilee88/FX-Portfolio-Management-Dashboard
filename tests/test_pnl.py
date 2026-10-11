@@ -468,7 +468,6 @@ def test_sample_portfolio_at_entry_like_rates_runs_end_to_end():
         "USD": USD,
         "EUR": _quote(1.09), "GBP": _quote(1.27), "AUD": _quote(0.66), "NZD": _quote(0.59),
         "JPY": _quote(1 / 147.0), "CHF": _quote(1 / 0.80), "CAD": _quote(1 / 1.39),
-        "CNH": _quote(1 / 7.12), "MXN": _quote(1 / 18.6),
     }
 
     pnl = compute_position_pnl(trades, quotes)

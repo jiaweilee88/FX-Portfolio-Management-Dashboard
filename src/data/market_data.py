@@ -36,15 +36,32 @@ class YfTicker:
 
 
 YF_TICKERS: dict[str, YfTicker] = {
+    # Raw quote is USD per unit of the foreign currency
     "EUR": YfTicker("EURUSD=X", inverted=False),
     "GBP": YfTicker("GBPUSD=X", inverted=False),
     "AUD": YfTicker("AUDUSD=X", inverted=False),
     "NZD": YfTicker("NZDUSD=X", inverted=False),
+
+    # Raw quote is foreign-currency units per USD;
+    # invert to obtain USD per unit of foreign currency
     "JPY": YfTicker("JPY=X", inverted=True),
     "CHF": YfTicker("CHF=X", inverted=True),
     "CAD": YfTicker("CAD=X", inverted=True),
-    "CNH": YfTicker("CNH=X", inverted=True),
+    "CNY": YfTicker("CNY=X", inverted=True),
     "MXN": YfTicker("MXN=X", inverted=True),
+    "SGD": YfTicker("SGD=X", inverted=True),
+    "HKD": YfTicker("HKD=X", inverted=True),
+    "SEK": YfTicker("SEK=X", inverted=True),
+    "NOK": YfTicker("NOK=X", inverted=True),
+    "INR": YfTicker("INR=X", inverted=True),
+    "ZAR": YfTicker("ZAR=X", inverted=True),
+    "BRL": YfTicker("BRL=X", inverted=True),
+    "THB": YfTicker("THB=X", inverted=True),
+    "IDR": YfTicker("IDR=X", inverted=True),
+    "MYR": YfTicker("MYR=X", inverted=True),
+    "PHP": YfTicker("PHP=X", inverted=True),
+    "HUF": YfTicker("HUF=X", inverted=True),
+    "ILS": YfTicker("ILS=X", inverted=True),
 }
 
 

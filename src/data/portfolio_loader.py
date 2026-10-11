@@ -1,6 +1,9 @@
 """Loads and validates the portfolio CSV described in
 'Portfolio data schema (CSV)', applying the loader-relevant rows of the
-'Edge cases & data-quality risks' table:
+'Edge cases & data-quality risks' table. load_portfolio accepts a filesystem path
+or any already-open readable source (e.g. Streamlit's st.file_uploader() result),
+so a dashboard can read either the bundled sample file or a user-uploaded one
+through the exact same validation path:
 
 - Zero or negative notional/entry_price -> row rejected, rest of file still loads.
 - Duplicate trade_id -> rejected and listed in the validation report.
@@ -16,17 +19,18 @@ layer respectively, not here.
 from __future__ import annotations
 
 import csv
+import io
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import pandas as pd
 
 from src.models.schema import (
     ALL_COLUMNS,
     CURRENCY_PAIR_RE,
-    DATE_FORMAT,
+    DATE_FORMATS,
     REQUIRED_COLUMNS,
     VALID_SIDES,
     PortfolioSchemaError,
@@ -45,24 +49,42 @@ class PortfolioLoadResult:
     report: ValidationReport
 
 
-def load_portfolio(path: str | Path) -> PortfolioLoadResult:
-    path = Path(path)
+# A filesystem path, or any already-open readable source with the portfolio's CSV
+# text/bytes -- e.g. Streamlit's st.file_uploader() return value. This module has
+# no dependency on Streamlit; it only needs .read() and, optionally, .name.
+PortfolioSource = Union[str, Path, object]
+
+
+def _read_portfolio_text(source: PortfolioSource) -> tuple[str, str]:
+    """Returns (a label identifying the source for error messages, its raw text)."""
+    if isinstance(source, (str, Path)):
+        path = Path(source)
+        try:
+            return str(path), path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise PortfolioSchemaError(f"{path}: could not be read ({exc})") from exc
+
+    label = getattr(source, "name", None) or "uploaded file"
+    raw = source.read()
     try:
-        with path.open(newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            header = reader.fieldnames
-            if header is None:
-                raise PortfolioSchemaError(f"{path}: file is empty, no header row found")
+        return label, raw.decode("utf-8") if isinstance(raw, bytes) else raw
+    except UnicodeDecodeError as exc:
+        raise PortfolioSchemaError(f"{label}: could not be read as UTF-8 text ({exc})") from exc
 
-            missing_columns = [c for c in REQUIRED_COLUMNS if c not in header]
-            if missing_columns:
-                raise PortfolioSchemaError(
-                    f"{path}: missing required column(s): {', '.join(missing_columns)}"
-                )
 
-            rows = list(reader)
-    except OSError as exc:
-        raise PortfolioSchemaError(f"{path}: could not be read ({exc})") from exc
+def load_portfolio(source: PortfolioSource) -> PortfolioLoadResult:
+    label, text = _read_portfolio_text(source)
+
+    reader = csv.DictReader(io.StringIO(text))
+    header = reader.fieldnames
+    if header is None:
+        raise PortfolioSchemaError(f"{label}: file is empty, no header row found")
+
+    missing_columns = [c for c in REQUIRED_COLUMNS if c not in header]
+    if missing_columns:
+        raise PortfolioSchemaError(f"{label}: missing required column(s): {', '.join(missing_columns)}")
+
+    rows = list(reader)
 
     accepted: list[Trade] = []
     rejected: list[RejectedRow] = []
@@ -116,32 +138,27 @@ def _parse_row(row: dict[str, Optional[str]], seen_trade_ids: set[str]) -> Trade
     notional = _parse_positive_float(values["notional_base_ccy"], "notional_base_ccy")
     entry_price = _parse_positive_float(values["entry_price"], "entry_price")
 
-    settlement_date = (
-        _parse_date(values["settlement_date"], "settlement_date")
-        if values["settlement_date"]
-        else None
-    )
-
     return Trade(
         trade_id=trade_id,
         trade_date=trade_date,
         currency_pair=currency_pair,
         side=side,  # type: ignore[arg-type]
         notional_base_ccy=notional,
-        entry_price=entry_price,
-        settlement_date=settlement_date,
-        counterparty=values["counterparty"] or None,
-        book=values["book"] or None,
-        trader=values["trader"] or None,
-        notes=values["notes"] or None,
+        entry_price=entry_price
     )
 
 
 def _parse_date(value: str, field_name: str) -> date:
-    try:
-        return datetime.strptime(value, DATE_FORMAT).date()
-    except ValueError as exc:
-        raise ValueError(f"invalid {field_name}: {value!r} (expected YYYY-MM-DD)") from exc
+    """Tries each of schema.DATE_FORMATS in order (ISO 8601 first) and returns the
+    first match. A value matching none of them is rejected naming every format
+    tried, rather than guessing at an ambiguous one (see DATE_FORMATS' docstring)."""
+    for fmt in DATE_FORMATS:
+        try:
+            return datetime.strptime(value, fmt).date()
+        except ValueError:
+            continue
+    expected = ", ".join(DATE_FORMATS)
+    raise ValueError(f"invalid {field_name}: {value!r} (expected one of: {expected})")
 
 
 def _parse_positive_float(value: str, field_name: str) -> float:
@@ -171,5 +188,4 @@ def _to_dataframe(trades: list[Trade]) -> pd.DataFrame:
     ]
     df = pd.DataFrame(records, columns=columns)
     df["trade_date"] = pd.to_datetime(df["trade_date"])
-    df["settlement_date"] = pd.to_datetime(df["settlement_date"])
     return df

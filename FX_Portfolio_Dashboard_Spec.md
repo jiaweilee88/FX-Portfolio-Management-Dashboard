@@ -74,7 +74,6 @@ Every must-have maps directly to a line in the brief; should-haves are genuinely
 | Should-have | Stress scenarios (e.g. ±1%/±2%/±5% shocks per pair) |
 | Should-have | Component VaR contribution chart |
 | Should-have | Data-quality warnings (stale data, thin history, rejected rows) |
-| Should-have | Explicit reference-rate vs executable-quote labelling throughout the UI |
 | Should-have | VaR parameters (confidence level, horizon, lookback window) exposed as sidebar controls, defaulting to 95% / 1-day / 252-day |
 | Could-have | EWMA/GARCH volatility, or a historical-simulation/Monte Carlo VaR toggle |
 | Could-have | VaR backtesting (Kupiec exception count) |

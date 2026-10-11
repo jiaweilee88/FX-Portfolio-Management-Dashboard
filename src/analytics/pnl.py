@@ -65,6 +65,10 @@ def compute_position_pnl(trades: pd.DataFrame, quotes: Mapping[str, Quote]) -> p
          "base_currency", "term_currency"]
     ].copy()
     out["current_rate"] = u_base / u_term
+    out["u_base"] = u_base  # U_{A,t}: the literal base-currency quote this position's P&L is marked against
+    out["u_term"] = u_term  # U_{B,t}
+    out["u_base_as_of"] = _leg_date(base, quotes, "as_of")
+    out["u_term_as_of"] = _leg_date(term, quotes, "as_of")
     out["mark_as_of"] = mark_as_of
     out["previous_as_of"] = previous_as_of
     out["inception_pnl"] = p_t

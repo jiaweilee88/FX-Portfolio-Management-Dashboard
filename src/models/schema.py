@@ -1,9 +1,10 @@
-"""Portfolio CSV schema: required/optional columns, the Trade record, and
+"""Portfolio CSV schema: required columns, the Trade record, and
 validation-result containers used by src/data/portfolio_loader.py.
 
 Column definitions and the sign convention below follow the
 'Portfolio data schema (CSV)' and 'Sign convention' sections of
-FX_Portfolio_Dashboard_Spec.md exactly.
+FX_Portfolio_Dashboard_Spec.md exactly. The six required columns are all
+this dashboard uses.
 """
 
 from __future__ import annotations
@@ -22,20 +23,27 @@ REQUIRED_COLUMNS: tuple[str, ...] = (
     "entry_price",
 )
 
-OPTIONAL_COLUMNS: tuple[str, ...] = (
-    "settlement_date",
-    "counterparty",
-    "book",
-    "trader",
-    "notes",
-)
-
-ALL_COLUMNS: tuple[str, ...] = REQUIRED_COLUMNS + OPTIONAL_COLUMNS
+ALL_COLUMNS: tuple[str, ...] = REQUIRED_COLUMNS
 
 Side = Literal["BUY", "SELL"]
 VALID_SIDES: tuple[str, ...] = ("BUY", "SELL")
 
-DATE_FORMAT = "%Y-%m-%d"
+# Accepted trade_date formats, tried in this order. ISO 8601 (YYYY-MM-DD) is the
+# canonical format the schema documents and the sample portfolio/README use; the
+# rest are common day-first export formats, accepted so an upload in one of them
+# isn't rejected outright. Deliberately NOT ambiguous: no month-first (MM-DD-YYYY)
+# variant is included -- a two-digit pair like "07/08/26" is genuinely ambiguous
+# between day-first and month-first conventions, and silently guessing wrong would
+# corrupt a trade date with no error at all, which is worse than rejecting the row.
+# A date matching none of these is rejected, naming every format that was tried.
+DATE_FORMATS: tuple[str, ...] = (
+    "%Y-%m-%d",  # 2026-07-14 (ISO 8601, canonical)
+    "%d-%m-%Y",  # 14-07-2026
+    "%d-%m-%y",  # 14-07-26
+    "%d/%m/%Y",  # 14/07/2026
+    "%d/%m/%y",  # 14/07/26
+)
+DATE_FORMAT = DATE_FORMATS[0]  # the canonical format; kept for any external reference to it
 
 # BASE/TERM, e.g. EUR/USD, USD/JPY — exactly two 3-letter uppercase codes.
 CURRENCY_PAIR_RE = re.compile(r"^[A-Z]{3}/[A-Z]{3}$")
@@ -51,11 +59,6 @@ class Trade:
     side: Side
     notional_base_ccy: float
     entry_price: float
-    settlement_date: Optional[date] = None
-    counterparty: Optional[str] = None
-    book: Optional[str] = None
-    trader: Optional[str] = None
-    notes: Optional[str] = None
 
     @property
     def base_currency(self) -> str:

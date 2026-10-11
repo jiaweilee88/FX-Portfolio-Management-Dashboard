@@ -63,11 +63,24 @@ def _serve(monkeypatch, history=None, current=None):
     [
         ("EUR", "EURUSD=X", False), ("GBP", "GBPUSD=X", False), ("AUD", "AUDUSD=X", False),
         ("NZD", "NZDUSD=X", False), ("JPY", "JPY=X", True), ("CHF", "CHF=X", True),
-        ("CAD", "CAD=X", True), ("CNH", "CNH=X", True), ("MXN", "MXN=X", True),
+        ("CAD", "CAD=X", True), ("CNY", "CNY=X", True), ("MXN", "MXN=X", True),
+        ("SGD", "SGD=X", True), ("HKD", "HKD=X", True), ("SEK", "SEK=X", True),
+        ("NOK", "NOK=X", True), ("INR", "INR=X", True), ("ZAR", "ZAR=X", True),
+        ("BRL", "BRL=X", True), ("THB", "THB=X", True), ("IDR", "IDR=X", True),
+        ("MYR", "MYR=X", True), ("PHP", "PHP=X", True), ("HUF", "HUF=X", True),
+        ("ILS", "ILS=X", True),
     ],
 )
-def test_ticker_mapping_matches_spec(currency, symbol, inverted):
+def test_ticker_mapping(currency, symbol, inverted):
     assert md.YF_TICKERS[currency] == md.YfTicker(symbol, inverted)
+
+
+def test_ticker_mapping_has_no_untested_entries():
+    tested = {
+        "EUR", "GBP", "AUD", "NZD", "JPY", "CHF", "CAD", "CNY", "MXN", "SGD", "HKD",
+        "SEK", "NOK", "INR", "ZAR", "BRL", "THB", "IDR", "MYR", "PHP", "HUF", "ILS",
+    }
+    assert set(md.YF_TICKERS) == tested
 
 
 def test_fetch_history_requests_800_days_and_drops_todays_session(monkeypatch):
@@ -350,10 +363,10 @@ def test_outage_and_no_cache_means_no_market_data(tmp_path, monkeypatch):
 
 
 def test_unmapped_currency_is_no_market_data_without_a_fetch(tmp_path):
-    history = md.load_history(["SEK"], cache_dir=tmp_path, today=TODAY, now=NOW)
+    history = md.load_history(["DKK"], cache_dir=tmp_path, today=TODAY, now=NOW)
 
-    assert history.status["SEK"].no_market_data
-    assert "no yfinance ticker mapped" in history.status["SEK"].error
+    assert history.status["DKK"].no_market_data
+    assert "no yfinance ticker mapped" in history.status["DKK"].error
 
 
 def test_thin_history_flagged_low_confidence(tmp_path, monkeypatch):
@@ -452,10 +465,10 @@ def test_usd_current_quote_is_unity(tmp_path):
 
 
 def test_unmapped_currency_has_no_current_price(tmp_path):
-    quotes, errors = md.load_current_quotes(["SEK"], cache_dir=tmp_path, today=TODAY, now=NOW)
+    quotes, errors = md.load_current_quotes(["DKK"], cache_dir=tmp_path, today=TODAY, now=NOW)
 
-    assert "SEK" not in quotes
-    assert "no yfinance ticker mapped" in errors["SEK"]
+    assert "DKK" not in quotes
+    assert "no yfinance ticker mapped" in errors["DKK"]
 
 
 def test_history_and_current_are_independent_fetches(tmp_path, monkeypatch):
