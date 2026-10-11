@@ -5,7 +5,7 @@ inception and daily USD P&L, parametric portfolio/standalone/component VaR, curr
 exposure, and the data-quality state behind all of it, computed off one uploaded or
 bundled CSV and live yfinance prices.
 
-**Live link:** _add the deployed Streamlit Community Cloud URL here before submitting._
+**Live link:** https://fx-portfolio-management-dashboard-jiawei-lee.streamlit.app/
 
 ## Contents
 
