@@ -11,12 +11,16 @@ Each page load recomputes one point-in-time snapshot: the 800-day history
 (st.cache_data, 24h) plus current quotes (st.cache_data, 60s), then P&L/VaR off
 those quotes, fully refreshed from the sidebar's confidence/horizon/lookback on
 every rerun -- nothing VaR-related is cached, so a sidebar change always recomputes
-the real thing, never a stale figure. No intraday P&L series is stored or charted.
+the real thing, never a stale figure. No intraday (sub-daily) series is stored or
+tracked; the historical P&L chart is the current, static holdings replayed against
+each past day's settled price, not a day-by-day record of P&L as it actually
+happened -- there is no day-by-day holdings history to replay, since this
+dashboard only ever sees the current trade list.
 
-Page order: portfolio summary, positions by pair, component VaR breakdown (pair
-level), currency exposure, trade-level detail, then data-quality banners last in
-a collapsed expander -- visible to anyone who opens it, but not competing with
-the numbers above for attention.
+Page order: portfolio summary, historical P&L, positions by pair, component VaR
+breakdown (pair level), currency exposure, trade-level detail, then data-quality
+banners last in a collapsed expander -- visible to anyone who opens it, but not
+competing with the numbers above for attention.
 """
 
 import math
@@ -36,7 +40,7 @@ from src.analytics.exposure import (
     total_pct_of_portfolio_var,
     var_concentration,
 )
-from src.analytics.pnl import compute_position_pnl, portfolio_pnl
+from src.analytics.pnl import compute_position_pnl, historical_portfolio_pnl, portfolio_pnl
 from src.analytics.risk import (
     CONFIDENCE_LEVELS,
     DEFAULT_CONFIDENCE,
@@ -62,6 +66,14 @@ _DIVERGING_COLORS = {
     "light": {"positive": "#e34948", "negative": "#2a78d6", "text": "#0b0b0b", "grid": "#e1e0d9", "muted": "#898781"},
     "dark": {"positive": "#e66767", "negative": "#3987e5", "text": "#f0efec", "grid": "#2c2c2a", "muted": "#898781"},
 }
+
+# Status colors (dataviz skill palette.md, fixed, never themed -- same hex in both
+# modes). P&L sign is a genuine good/bad state, not an arbitrary polarity like the
+# VaR/exposure charts above, so it earns the reserved status tokens instead of the
+# diverging pair. The equity-curve line uses the categorical slot-1 blue: a single
+# series, so plain identity color, not a sign encoding.
+_STATUS_COLORS = {"good": "#0ca30c", "critical": "#d03b3b"}
+_LINE_COLOR = {"light": "#2a78d6", "dark": "#3987e5"}
 
 
 def _theme() -> str:
@@ -163,6 +175,64 @@ def _build_currency_exposure_table(exposure_frame: pd.DataFrame) -> pd.DataFrame
         },
         index=exposure_frame.index.rename("Currency"),
     )
+
+
+def _equity_curve_chart(frame: pd.DataFrame) -> go.Figure:
+    """Line chart of pnl.historical_portfolio_pnl's inception_pnl column: the
+    current, static holdings marked against each past settled session's price."""
+    palette = _DIVERGING_COLORS[_theme()]
+    fig = go.Figure(
+        go.Scatter(
+            x=frame.index,
+            y=frame["inception_pnl"],
+            mode="lines",
+            line=dict(color=_LINE_COLOR[_theme()], width=2),
+            hovertemplate="%{x|%Y-%m-%d}<br>Inception P&L: $%{y:,.2f}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font_color=palette["text"],
+        margin=dict(l=0, r=10, t=10, b=0),
+        height=280,
+        xaxis=dict(title=None, gridcolor=palette["grid"]),
+        yaxis=dict(
+            title="Inception P&L (USD)", gridcolor=palette["grid"], zeroline=True, zerolinecolor=palette["muted"]
+        ),
+        showlegend=False,
+    )
+    return fig
+
+
+def _daily_pnl_bar_chart(frame: pd.DataFrame) -> go.Figure:
+    """Bar chart of pnl.historical_portfolio_pnl's daily_pnl column. Green/red
+    (status colors): P&L sign is a good/bad state, not a polarity."""
+    palette = _DIVERGING_COLORS[_theme()]
+    daily = frame["daily_pnl"].dropna()
+    colors = [_STATUS_COLORS["good"] if v >= 0 else _STATUS_COLORS["critical"] for v in daily]
+
+    fig = go.Figure(
+        go.Bar(
+            x=daily.index,
+            y=daily,
+            marker_color=colors,
+            hovertemplate="%{x|%Y-%m-%d}<br>Daily P&L: $%{y:,.2f}<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font_color=palette["text"],
+        margin=dict(l=0, r=10, t=10, b=0),
+        height=220,
+        xaxis=dict(title=None, gridcolor=palette["grid"]),
+        yaxis=dict(
+            title="Daily P&L (USD)", gridcolor=palette["grid"], zeroline=True, zerolinecolor=palette["muted"]
+        ),
+        showlegend=False,
+    )
+    return fig
 
 
 def _component_var_chart(summary: pd.DataFrame) -> go.Figure:
@@ -321,6 +391,7 @@ def main() -> None:
     concentration = var_concentration(var_result, trades)
     pair_table = pair_summary(trades, quotes, pnl_df, var_result)
     currency_exposure = compute_currency_exposure(trades, quotes)
+    historical_frame, historical_excluded = historical_portfolio_pnl(trades, history.levels)
 
     if totals.daily_footnote:
         banners.append(totals.daily_footnote)
@@ -328,6 +399,8 @@ def main() -> None:
         banners.append(f"Excluded from VaR, no market data: {', '.join(var_result.excluded_trade_ids)}")
     if currency_exposure.excluded_trade_ids:
         banners.append(f"Excluded from currency exposure, no market data: {', '.join(currency_exposure.excluded_trade_ids)}")
+    if historical_excluded:
+        banners.append(f"Excluded from historical P&L, no market data: {', '.join(historical_excluded)}")
 
     # --- 1. portfolio summary ---------------------------------------------------
     st.subheader("Portfolio summary")
@@ -348,7 +421,21 @@ def main() -> None:
     c4.metric("Diversification Benefit (USD)", _usd(pair_db))
     c4.caption(f"Sum of pair-level standalone VaRs: {_usd(pair_standalone_sum(pair_table))}")
 
-    # --- 2. positions by pair ----------------------------------------------------
+    # --- 2. historical P&L: the current holdings replayed against past prices --
+    st.subheader("Historical P&L")
+    if historical_frame.empty:
+        st.caption("Not enough price history to build a historical P&L curve for this portfolio.")
+    else:
+        st.plotly_chart(_equity_curve_chart(historical_frame), width="stretch")
+        st.plotly_chart(_daily_pnl_bar_chart(historical_frame), width="stretch")
+        st.caption(
+            f"Mark-to-market of the current portfolio against historical prices, "
+            f"{historical_frame.index.min():%Y-%m-%d} to {historical_frame.index.max():%Y-%m-%d} "
+            "(last fully-settled session) -- today's live move is in the Portfolio summary metrics "
+            "above, not yet in this curve. Green/red = gain/loss."
+        )
+
+    # --- 3. positions by pair ----------------------------------------------------
     st.subheader("Position Information by Currency Pair")
     st.dataframe(_build_pair_table(pair_table), hide_index=True, width="stretch")
     st.caption(
@@ -356,12 +443,12 @@ def main() -> None:
         f"{_usd(var_result.portfolio_var)}; percentages sum to {total_pct_of_portfolio_var(pair_table):.2f}%."
     )
 
-    # --- 3. component VaR breakdown, at pair level (matches the table above) ----
+    # --- 4. component VaR breakdown, at pair level (matches the table above) ----
     st.subheader("Component VaR breakdown")
     st.plotly_chart(_component_var_chart(pair_table), width="stretch")
     st.caption("Red = adds to portfolio VaR. Blue = diversifies it.")
 
-    # --- 4. currency exposure ----------------------------------------------------
+    # --- 5. currency exposure ----------------------------------------------------
     st.subheader("Currency exposure")
     exposure_frame = currency_exposure.as_frame()
     col_table, col_chart = st.columns([3, 2])
@@ -369,7 +456,7 @@ def main() -> None:
     col_chart.plotly_chart(_currency_exposure_chart(exposure_frame), width="stretch")
     col_chart.caption("Red = net long. Blue = net short.")
 
-    # --- 5. trade-level detail ----------------------------------------------------
+    # --- 6. trade-level detail ----------------------------------------------------
     st.subheader("Trade-level detail")
     st.dataframe(_build_trade_detail_table(pnl_df, concentration), hide_index=True, width="stretch")
     st.caption(

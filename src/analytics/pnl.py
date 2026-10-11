@@ -135,6 +135,46 @@ def _footnote(n_positions: int, metric: str, groups: list[tuple[str, tuple[str, 
     )
 
 
+def historical_portfolio_pnl(
+    trades: pd.DataFrame, levels: pd.DataFrame
+) -> tuple[pd.DataFrame, tuple[str, ...]]:
+    """Portfolio inception and daily USD P&L at every date in `levels`
+    (market_data.HistoryData.levels: U_C by FX business date, USD = 1.0), using the
+    same position_value formula as compute_position_pnl -- an equity curve, not a
+    new model. A trade contributes exactly 0 before its own trade_date (P_{i,0} = 0
+    by construction, same as the point-in-time formula); it is excluded entirely,
+    not zeroed, on every date if either of its own legs has no market data at all.
+
+    This is a past-looking mark-to-market of the portfolio's current (static)
+    holdings against historical prices, not a record of P&L as it was actually
+    reported day by day -- there is no day-by-day holdings history to replay, since
+    this dashboard only ever sees the current trade list. The curve stops at the
+    last fully-settled session in `levels`; it does not include today's still-live
+    quote (compute_position_pnl/portfolio_pnl do, for the headline metrics).
+
+    Returns (frame, excluded_trade_ids), frame indexed by date with columns
+    inception_pnl and daily_pnl (daily_pnl's first row is NaN: there is no prior
+    date in the window to diff against, which is a window boundary, not a gap)."""
+    marks: dict[str, pd.Series] = {}
+    excluded: list[str] = []
+
+    for _, t in trades.iterrows():
+        base, term = t["base_currency"], t["term_currency"]
+        if base not in levels.columns or term not in levels.columns:
+            excluded.append(t["trade_id"])
+            continue
+        mark = position_value(t["side_sign"], t["notional_base_ccy"], t["entry_price"], levels[base], levels[term])
+        marks[t["trade_id"]] = mark.mask(mark.index < pd.Timestamp(t["trade_date"]), 0.0)
+
+    if not marks:
+        return pd.DataFrame(columns=["inception_pnl", "daily_pnl"]), tuple(excluded)
+
+    inception = pd.DataFrame(marks).sum(axis=1, min_count=1)
+    frame = pd.DataFrame({"inception_pnl": inception, "daily_pnl": inception.diff()})
+    earliest_trade = pd.Timestamp(trades["trade_date"].min())
+    return frame.loc[frame.index >= earliest_trade], tuple(excluded)
+
+
 def _leg(currencies: pd.Series, quotes: Mapping[str, Quote], attr: str) -> pd.Series:
     return currencies.map(lambda c: getattr(quotes[c], attr) if c in quotes else None).astype(float)
 

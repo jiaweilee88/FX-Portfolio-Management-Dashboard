@@ -142,6 +142,33 @@ def test_currency_exposure_table_and_bar_chart_present(app_env):
     assert len(at.get("plotly_chart")) >= 2  # component-VaR bar + currency-exposure bar
 
 
+def test_historical_pnl_charts_present_between_summary_and_pair_table(app_env):
+    at = _run()
+
+    subheaders = [s.value for s in at.subheader]
+    assert "Historical P&L" in subheaders
+    assert subheaders.index("Historical P&L") < subheaders.index("Position Information by Currency Pair")
+    assert subheaders.index("Portfolio summary") < subheaders.index("Historical P&L")
+
+    caption = next(c.value for c in at.caption if "last fully-settled session" in c.value)
+    assert "today's live move is in the Portfolio summary metrics above" in caption
+
+    # At least 4 charts now: equity curve, daily bars, component VaR, currency exposure.
+    assert len(at.get("plotly_chart")) >= 4
+
+
+def test_historical_pnl_curve_ends_at_or_before_the_latest_quote_date(app_env):
+    at = _run()
+
+    latest_quote_caption = next(c.value for c in at.caption if c.value.startswith("Prices: yfinance"))
+    latest_quote_date = date.fromisoformat(latest_quote_caption.rsplit(" ", 1)[1])
+
+    reconciliation_caption = next(c.value for c in at.caption if "last fully-settled session" in c.value)
+    curve_end = date.fromisoformat(reconciliation_caption.split(" to ")[1].split(" ")[0])
+
+    assert curve_end <= latest_quote_date  # the curve never runs ahead of today's own live quote
+
+
 def test_data_quality_banners_are_collapsed_at_the_bottom(app_env):
     at = _run()
 

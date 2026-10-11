@@ -7,14 +7,9 @@ bundled CSV and live yfinance prices.
 
 **Live link:** _add the deployed Streamlit Community Cloud URL here before submitting._
 
-bundled source data by default:
-data/
-└── sample_portfolio.csv        17 trades, 9 major pairs (incl. EUR/GBP, AUD/JPY crosses)
-
 ## Contents
 
 - [Quick start](#quick-start)
-- [Where this README differs from the spec](#where-this-readme-differs-from-the-spec)
 - [Methodology](#methodology)
 - [Major assumptions](#major-assumptions)
 - [Limitations & known issues](#limitations--known-issues)
@@ -28,7 +23,7 @@ data/
 ```bash
 pip install -r requirements.txt
 streamlit run app.py          # opens the dashboard on the bundled sample portfolio
-pytest                        # 222 tests, no network access required
+pytest                        # 233 tests, no network access required
 ```
 
 No API key or secret is required. The app reads `data/sample_portfolio.csv` by
@@ -62,6 +57,24 @@ Two things that aren't 0 or a crash by design:
   which would blank the whole total, and not silently zeroed, which would hide the
   gap) — the total carries a footnote naming which trades were excluded if any, and why.
 
+### Historical P&L Curve
+
+The "Historical P&L" section replays the portfolio's *current* holdings against
+*past* prices, using the exact same `position_value` formula as the point-in-time
+P&L above — it is not a second model. For each trade, `U_A,t` and `U_B,t` come from
+`market_data.HistoryData.levels` (the same 800-day history the VaR engine uses)
+instead of just today's quote, giving `P_i,t` at every past settled date; the
+portfolio curve is the sum across trades, with each trade contributing exactly 0
+before its own `trade_date`. The daily bars are just that curve's day-over-day
+diff. A trade missing market data entirely is excluded from the curve, not zeroed.
+
+This is a replay, not a record: there's no stored history of what the portfolio's
+holdings actually were on a past date, so a trade is assumed to have been held,
+unchanged, from its `trade_date` to today (see **Major assumptions** below). The
+curve also stops at the last fully-settled session — it does not include today's
+still-live quote, which is why it can sit one point behind the headline Portfolio
+summary metrics above it.
+
 ### VaR methodology
 
 Parametric (delta-normal), 1-day horizon, 95% confidence, 252-trading-day lookback
@@ -81,8 +94,8 @@ Marginal_i   = Component_i / x_i,  x_i = signed notional
   over the lookback window, on dates common to every currency in the portfolio
   (inner join, enforced inside `covariance_matrix` itself, not assumed of the
   caller). It's regularised with a small ridge **only if** it fails a
-  positive-semidefinite (PSD) check — a true sample covariance is always PSD, so this 
-  is a rarely-triggered safety net
+  positive-semidefinite (PSD) check — a true sample covariance is always PSD, so this
+  is a rarely-triggered safety net, not an unconditional perturbation of real data.
 - **Component VaR sums to portfolio VaR exactly** (Euler's theorem, since VaR is
   homogeneous of degree one in exposure) — tested to 1e-6 at every lookback window
   from 60 to 500 days, and both reconciliation captions on the dashboard state the
@@ -107,8 +120,8 @@ Standalone VaR is **never** obtained by summing a pair's trades' own standalone
 VaR — doing so double-counts the netting between two offsetting trades on the same
 pair as if it were real diversification. The headline **Diversification Benefit**
 metric is `sum(pair-level standalone VaR) − portfolio VaR`. The trade-level
-version, still exists in the code — it backs the trade-level subadditivity
-invariant test, not what the dashboard displays as the headline figure.
+version still exists in the code — it backs the trade-level subadditivity
+invariant test — it's just not what the dashboard displays as the headline figure.
 
 ### Currency exposure
 
@@ -156,8 +169,8 @@ fails the whole load with one clear error.
 
 - **Spot only.** No forwards, swaps, or other instruments — every position is a
   single spot trade with no maturity.
-- **USD is the only reporting currency.** Every figure on the dashboard is in USD 
-  unless stated otherwise; there's no option to report in EUR or any other base.
+- **USD is the only reporting currency.** Every figure on the dashboard is in USD;
+  there's no option to report in EUR or any other base.
 - **`notional_base_ccy` is in the pair's base-currency units**, always a positive
   magnitude; sign comes from `side` (BUY = +1, SELL = −1), never from the number
   itself.
@@ -167,6 +180,11 @@ fails the whole load with one clear error.
 - **A static book.** Positions don't amortize, roll, or rebalance — the quantity of
   each currency a trade holds is fixed from execution; only its USD value is marked
   to market.
+- **Every row is a still-open position; nothing is ever closed.** The schema has
+  no exit price or exit date, so every trade counts toward every calculation —
+  current P&L, VaR, exposure, and the historical curve, which replays it across
+  its *entire* life from `trade_date` to today — as if it's still live now. A
+  trade that was in reality closed out last month has no way to say so.
 - **Today's still-forming yfinance session is excluded from the VaR history** (so a
   live-vs-settled-bar inconsistency can't leak into the covariance matrix) but *is*
   used for the current price and daily P&L.
@@ -188,8 +206,9 @@ EUR: 1 daily return(s) beyond 5 standard deviations, most recent 2025-04-11
 These are **genuine, correctly-firing signals, not bugs**: the repeated-rate flags
 trace to a yfinance data gap around the April 2025 Good Friday/Easter weekend, and
 the 5-sigma flags are real volatility events in that window. They fire on G10
-majors just as much as anything more exotic. Can't remove a calendar artifact
-that hits every currency in the window equally. All such warnings are collapsed in
+majors just as much as anything more exotic, so there's no way to remove a
+calendar artifact that hits every currency in the window equally. All such
+warnings are collapsed in
 a "Data-quality warnings" expander at the bottom of the page — visible, not buried,
 but not competing with the headline numbers either.
 
@@ -200,13 +219,14 @@ but not competing with the headline numbers either.
   cache is empty or stale, that currency is excluded from VaR and flagged "no
   market data" rather than silently mispriced — but there's no second live source
   to fail over to the way the original FRED+yfinance design had.
-- **The local cache is short life spanned on most cloud hosts.** Streamlit Community Cloud
+- **The local cache is ephemeral on most cloud hosts.** Streamlit Community Cloud
   doesn't guarantee local disk persists across restarts/redeploys, so the "runs
   even if the API is down" promise only holds once the cache has been warmed by at
   least one successful fetch after the most recent cold start.
-- yfinance's offshore CNH ticker had almost no usable history when checked. 
-  They trade at a small, real basis to each other — not a bug, 
-  just worth knowing if you're expecting offshore pricing.
+- **CNY vs CNH**: the ticker mapped for the Chinese yuan is onshore CNY (`CNY=X`);
+  yfinance's offshore CNH ticker had almost no usable history when checked. They
+  trade at a small, real basis to each other — not a bug, just worth knowing if
+  you're expecting offshore pricing.
 
 ### VaR methodology
 
@@ -214,7 +234,7 @@ but not competing with the headline numbers either.
   understates tail risk relative to historical simulation or Monte Carlo,
   especially around FX regime shifts (e.g. a sudden peg break).
 - **Equal-weighted 252-day lookback reacts slowly** to a sudden rise in volatility,
-  versus an EWMA weighted alternative.
+  versus an EWMA-weighted alternative.
 - **P&L is exact; VaR is linear.** A USD-base pair's P&L (e.g. USD/JPY) is mildly
   non-linear in the rate because the offsetting leg is fixed in the foreign
   currency, not USD; parametric VaR, by construction, is a linear (delta) model.
@@ -228,13 +248,19 @@ but not competing with the headline numbers either.
 ### Scope not implemented
 
 - Expected shortfall / CVaR, or any tail-risk measure beyond VaR.
-- Historical portfolio P&L / equity curve (this is a point-in-time snapshot by
-  design; no intraday or historical P&L series is stored or tracked).
+- Closing or reducing a position — see "every row is a still-open position" above.
 
 ## What we'd improve with more time
 
 ### Additional analytics
-- **Historical P&L series**
+- **Position lifecycle (closing/reducing a trade)** — the historical P&L curve and
+  every other calculation currently assume a trade is still fully open today (see
+  **Major assumptions**). An exit price/date on the schema would let the curve
+  reflect a position actually being closed, rather than replaying it to the present
+  regardless.
+- **Per-pair or per-currency historical curves**, not just the portfolio total —
+  the data (`market_data.HistoryData.levels`) already supports it; it's a
+  presentation addition on top of `pnl.historical_portfolio_pnl`.
 - **Expected shortfall (CVaR)** — the average loss *beyond* the VaR threshold, not
   just the threshold itself. It's a more informative tail-risk number than VaR alone.
   Natural to add alongside the existing parametric engine as a second column next
@@ -268,7 +294,7 @@ A decoupled frontend would also remove Streamlit's full-script-rerun-per-interac
 model, which currently means every sidebar tweak re-walks the whole page.
 
 ### Engineering
-- **CI** (GitHub Actions) running the 222-test suite on every push, rather than
+- **CI** (GitHub Actions) running the 233-test suite on every push, rather than
   relying on a local `pytest` run before each push.
 - **A persistent cache** (a small hosted KV store or database) instead of local
   parquet files, so the "survives an API outage" guarantee holds across Streamlit
@@ -280,24 +306,50 @@ model, which currently means every sidebar tweak re-walks the whole page.
 
 ## Testing
 
-222 tests, `pytest`, no network access required (yfinance is mocked at the client
+233 tests, `pytest`, no network access required (yfinance is mocked at the client
 boundary in every test):
 
 | File | Tests | Covers |
 |---|---|---|
 | `test_portfolio_loader.py` | 24 | Schema validation, rejection behavior, date-format fallbacks, file-like (upload) sources |
 | `test_market_data.py` | 67 | Ticker mapping, FX trading calendar, caching/staleness, quote cleaning, outage fallback |
-| `test_pnl.py` | 42 | The unified P&L formula, new-position/missing-previous-close handling, triangulation consistency |
+| `test_pnl.py` | 51 | The unified P&L formula, new-position/missing-previous-close handling, triangulation consistency, the historical P&L curve |
 | `test_risk.py` | 47 | z-score, covariance regularisation, standalone/component/marginal VaR, Euler reconciliation, horizon scaling |
 | `test_exposure.py` | 29 | Currency exposure, pair-level aggregation, diversification benefit, reconciliation totals |
-| `test_app.py` | 13 | End-to-end page rendering, caching TTLs, file upload, section ordering |
+| `test_app.py` | 15 | End-to-end page rendering, caching TTLs, file upload, section ordering, the historical P&L section |
 
 Invariants checked directly (not just spot-checked): component VaR sums to
 portfolio VaR to 1e-6 at every lookback from 60–500 days; portfolio VaR never
 exceeds the sum of standalone VaRs; a single-position portfolio has identical
 portfolio/standalone/component VaR; a flat net position contributes exactly zero;
 10-day VaR equals 1-day VaR × √10; a pair's net standalone VaR is strictly less
-than the sum of its trades' own standalone VaR whenever they partly offset.
+than the sum of its trades' own standalone VaR whenever they partly offset; a new
+trade's entry-day daily P&L (point-in-time or historical) equals its own inception
+mark.
+
+## Repository structure
+
+```
+app.py                          Streamlit entry point — presentation only
+src/
+├── data/
+│   ├── portfolio_loader.py     CSV/upload parsing & validation
+│   ├── market_data.py          yfinance client, caching, canonical U_C series
+│   └── cache/                  local parquet cache (gitignored)
+├── analytics/
+│   ├── pnl.py                  the unified P&L formula + the historical curve
+│   ├── risk.py                 parametric VaR (portfolio/standalone/component/marginal)
+│   └── exposure.py             currency exposure, VaR concentration, pair-level views
+└── models/
+    └── schema.py                portfolio schema, Trade record, date formats
+data/
+└── sample_portfolio.csv        17 trades, 9 major pairs (incl. EUR/GBP, AUD/JPY crosses)
+tests/                          233 tests, one file per src/ module plus test_app.py
+conftest.py                     puts the repo root on sys.path for `from src...` imports
+.streamlit/
+├── config.toml                 (empty — no custom theme set)
+└── secrets.toml                (empty — no secret is needed; yfinance requires no API key)
+```
 
 ## Deployment
 

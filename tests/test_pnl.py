@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.analytics.pnl import compute_position_pnl, portfolio_pnl, position_value
+from src.analytics.pnl import compute_position_pnl, historical_portfolio_pnl, portfolio_pnl, position_value
 from src.data.market_data import Quote
 from src.data.portfolio_loader import load_portfolio
 
@@ -475,3 +475,146 @@ def test_sample_portfolio_at_entry_like_rates_runs_end_to_end():
     assert len(pnl) == len(trades) == 17
     assert pnl["inception_pnl"].notna().all() and pnl["daily_pnl"].notna().all()
     assert not pnl["no_market_data"].any()
+
+
+# --- historical_portfolio_pnl (the equity-curve chart's data) ---------------
+
+
+def _levels(dates, **columns):
+    df = pd.DataFrame(columns, index=pd.DatetimeIndex(dates))
+    df["USD"] = 1.0
+    return df
+
+
+def test_historical_pnl_is_zero_for_a_trade_before_its_own_entry_date():
+    dates = pd.bdate_range("2026-09-01", periods=5)
+    levels = _levels(dates, EUR=[1.08, 1.09, 1.10, 1.11, 1.12], GBP=[1.25] * 5)
+    trades = _trades(
+        ("T1", "2026-09-01", "EUR/USD", "BUY", 1_000_000, 1.08),  # starts day 1
+        ("T2", "2026-09-03", "GBP/USD", "BUY", 1_000_000, 1.25),  # starts day 3, flat rate
+    )
+
+    frame, excluded = historical_portfolio_pnl(trades, levels)
+
+    assert excluded == ()
+    # Before T2 exists, the portfolio total is T1 alone.
+    day2 = dates[1]
+    assert frame.loc[day2, "inception_pnl"] == pytest.approx(1_000_000 * (1.09 - 1.08))
+
+
+def test_historical_pnl_matches_position_value_on_a_specific_date():
+    dates = pd.bdate_range("2026-09-01", periods=3)
+    levels = _levels(dates, EUR=[1.08, 1.09, 1.10])
+    trades = _trades(("T1", "2026-09-01", "EUR/USD", "SELL", 2_000_000, 1.08))
+
+    frame, _ = historical_portfolio_pnl(trades, levels)
+
+    expected = position_value(-1, 2_000_000, 1.08, 1.10, 1.0)
+    assert frame.loc[dates[2], "inception_pnl"] == pytest.approx(expected)
+
+
+def test_historical_pnl_daily_is_the_diff_of_inception():
+    dates = pd.bdate_range("2026-09-01", periods=4)
+    levels = _levels(dates, EUR=[1.08, 1.11, 1.09, 1.13])
+    trades = _trades(("T1", "2026-09-01", "EUR/USD", "BUY", 1_000_000, 1.08))
+
+    frame, _ = historical_portfolio_pnl(trades, levels)
+
+    assert frame["daily_pnl"].iloc[1:].tolist() == pytest.approx(frame["inception_pnl"].diff().iloc[1:].tolist())
+
+
+def test_historical_pnl_first_row_daily_is_nan_not_zero():
+    dates = pd.bdate_range("2026-09-01", periods=3)
+    levels = _levels(dates, EUR=[1.08, 1.09, 1.10])
+    trades = _trades(("T1", "2026-09-01", "EUR/USD", "BUY", 1_000_000, 1.08))
+
+    frame, _ = historical_portfolio_pnl(trades, levels)
+
+    assert np.isnan(frame["daily_pnl"].iloc[0])  # window boundary, not a data gap
+
+
+def test_a_new_trades_entry_day_daily_pnl_equals_its_own_inception_mark():
+    dates = pd.bdate_range("2026-09-01", periods=4)
+    levels = _levels(dates, EUR=[1.10, 1.10, 1.10, 1.10])  # flat: T1 contributes 0 throughout
+    trades = _trades(
+        ("T1", "2026-09-01", "EUR/USD", "BUY", 1_000_000, 1.10),
+        ("T2", "2026-09-03", "EUR/USD", "BUY", 1_000_000, 1.08),  # enters in-the-money
+    )
+
+    frame, _ = historical_portfolio_pnl(trades, levels)
+
+    entry_day = dates[2]
+    expected_jump = 1_000_000 * (1.10 - 1.08)
+    assert frame.loc[entry_day, "daily_pnl"] == pytest.approx(expected_jump)
+    assert frame.loc[entry_day, "inception_pnl"] == pytest.approx(expected_jump)
+
+
+def test_historical_pnl_excludes_a_trade_with_no_market_data_entirely():
+    dates = pd.bdate_range("2026-09-01", periods=3)
+    levels = _levels(dates, EUR=[1.08, 1.09, 1.10])  # no SEK column
+    trades = _trades(
+        ("T1", "2026-09-01", "EUR/USD", "BUY", 1_000_000, 1.08),
+        ("T2", "2026-09-01", "EUR/SEK", "BUY", 500_000, 11.5),
+    )
+
+    frame, excluded = historical_portfolio_pnl(trades, levels)
+
+    assert excluded == ("T2",)
+    assert frame.loc[dates[2], "inception_pnl"] == pytest.approx(1_000_000 * (1.10 - 1.08))
+
+
+def test_historical_pnl_all_trades_excluded_returns_empty_frame():
+    dates = pd.bdate_range("2026-09-01", periods=3)
+    levels = _levels(dates, EUR=[1.08, 1.09, 1.10])  # no SEK column
+    trades = _trades(("T1", "2026-09-01", "EUR/SEK", "BUY", 500_000, 11.5))
+
+    frame, excluded = historical_portfolio_pnl(trades, levels)
+
+    assert excluded == ("T1",)
+    assert frame.empty
+    assert list(frame.columns) == ["inception_pnl", "daily_pnl"]
+
+
+def test_historical_pnl_frame_starts_at_the_earliest_trade_date():
+    dates = pd.bdate_range("2026-08-01", periods=10)
+    levels = _levels(dates, EUR=np.linspace(1.05, 1.15, 10))
+    trade_date = dates[4]  # mid-window, so there are both earlier and later dates to trim/keep
+    trades = _trades(("T1", str(trade_date.date()), "EUR/USD", "BUY", 1_000_000, 1.08))
+
+    frame, _ = historical_portfolio_pnl(trades, levels)
+
+    assert frame.index.min() == trade_date
+    assert frame.index.max() == dates[-1]
+
+
+def test_historical_pnl_on_the_real_sample_portfolio_reconciles_with_todays_snapshot():
+    # The curve's last point (last settled session) plus one more day's move should
+    # land in the same ballpark as compute_position_pnl's own inception figure for
+    # a trade priced at that exact same U_C -- a lightweight cross-check that the
+    # two code paths (point-in-time vs historical) agree on the same formula.
+    trades = load_portfolio(SAMPLE_PORTFOLIO).trades
+    dates = pd.bdate_range(end="2026-10-08", periods=400)
+    rng = np.random.default_rng(0)
+    levels = _levels(
+        dates,
+        **{
+            ccy: start * np.exp(np.cumsum(rng.normal(0, 0.005, len(dates))))
+            for ccy, start in [("EUR", 1.09), ("GBP", 1.27), ("AUD", 0.66), ("NZD", 0.59)]
+        },
+        JPY=1 / (147.0 * np.exp(np.cumsum(rng.normal(0, 0.005, len(dates))))),
+        CHF=1 / (0.80 * np.exp(np.cumsum(rng.normal(0, 0.005, len(dates))))),
+        CAD=1 / (1.39 * np.exp(np.cumsum(rng.normal(0, 0.005, len(dates))))),
+    )
+
+    frame, excluded = historical_portfolio_pnl(trades, levels)
+
+    assert excluded == ()
+    assert not frame.empty
+    assert frame.index.min() == pd.Timestamp(trades["trade_date"].min())
+    last_date = frame.index.max()
+    quotes_at_last_date = {
+        "USD": USD,
+        **{ccy: _quote(levels.loc[last_date, ccy]) for ccy in ["EUR", "GBP", "AUD", "NZD", "JPY", "CHF", "CAD"]},
+    }
+    snapshot = portfolio_pnl(compute_position_pnl(trades, quotes_at_last_date))
+    assert frame.loc[last_date, "inception_pnl"] == pytest.approx(snapshot.inception_pnl)
